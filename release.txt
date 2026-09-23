@@ -1,0 +1,7 @@
+# UNBOUND_PLUGIN_RELEASE_V1
+# Staged metadata. Publish this file only after the matching ZIP is live at the
+# immutable GitHub Release URL below and its downloaded hashes have been checked.
+# PLUGIN_KEY|REVISION|VERSION|DOWNLOAD_URL|ARCHIVE_SHA256|ARCHIVE_BYTES
+GAMEPAD_MIC_REDIRECT|1|0.4.0|https://github.com/tonytrawl/gamepad-mic-redirect/releases/download/v0.4.0/wiiu.zip|c01b7059bf3d9c9c594575b559e4340dcd550e32283e49942b2a60c94d435942|103098
+# FILE|ARCHIVE_PATH|SHA256|BYTES
+FILE|wiiu/environments/aroma/plugins/GamePadMicRedirect.wps|a33a3737f75126030daf6b9c7e12ef5fdcf0abf93b8c816a833b72aa3a6bb32e|103822

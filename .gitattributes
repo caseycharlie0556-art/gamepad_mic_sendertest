@@ -1,0 +1,5 @@
+# Keep source and metadata byte-for-byte portable across Windows and Unix.
+* text=auto eol=lf
+*.wps binary
+*.elf binary
+*.zip binary
