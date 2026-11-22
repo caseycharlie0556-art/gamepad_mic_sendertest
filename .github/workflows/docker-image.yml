@@ -15,16 +15,4 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - name: Build the Docker image
-      run: docker build . --file Dockerfile --tag wiiu-plugin
-
-    - name: Extract .wps
-      run: |
-        id=$(docker create wiiu-plugin)
-        docker cp $id:/ ./container_out
-        docker rm -v $id
-
-    - name: Upload plugin
-      uses: actions/upload-artifact@v4
-      with:
-        name: GamePadMicRedirect
-        path: container_out/**/GamePadMicRedirect.wps
+      run: docker build . --file Dockerfile --tag my-image-name:$(date +%s)
