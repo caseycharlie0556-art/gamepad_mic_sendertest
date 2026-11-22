@@ -16,7 +16,7 @@ WUPS_PLUGIN_AUTHOR("Custom");
 WUPS_PLUGIN_LICENSE("MIT");
 
 // Change this to your PC's local IPv4 address
-static const char* SERVER_IP = "192.168.1.100";
+static const char* SERVER_IP = "192.168.1.167";
 static const uint16_t SERVER_PORT = 5005;
 
 static OSThread sMicThread;
