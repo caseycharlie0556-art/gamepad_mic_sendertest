@@ -1,40 +1,30 @@
-name: Build Wii U Aroma Plugin
+name: Docker Image CI
 
 on:
   push:
     branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
-  workflow_dispatch:
-
-permissions:
-  contents: read
 
 jobs:
-  build-plugin:
+
+  build:
+
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+    - uses: actions/checkout@v4
 
-      - name: Build builder Docker image
-        run: docker build --file DOCKERBUILD -t gamepad-mic-redirect-builder .
+    - name: Build the Docker image
+      run: docker build . --file Dockerfile --tag my-image-name:$(date +%s)
 
-      - name: Compile GamePadMicRedirect.wps
-        run: |
-          docker run --rm -v "${{ github.workspace }}:/project" gamepad-mic-redirect-builder make
+    - name: Build GamePadMicRedirect.wps
+      run: |
+        IMAGE_ID=$(docker images -q my-image-name | head -n 1)
+        docker run --rm -v "${{ github.workspace }}:/project" "$IMAGE_ID" make
 
-      - name: Package SD card zip
-        run: |
-          mkdir -p dist/wiiu/environments/aroma/plugins
-          cp GamePadMicRedirect.wps dist/wiiu/environments/aroma/plugins/
-          cd dist && zip -r ../wiiu.zip wiiu
-
-      - name: Upload GamePadMicRedirect.wps artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: GamePadMicRedirect-plugin
-          path: |
-            GamePadMicRedirect.wps
-            wiiu.zip
+    - name: Upload WPS artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: GamePadMicRedirect-wps
+        path: GamePadMicRedirect.wps
