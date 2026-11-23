@@ -29,6 +29,17 @@ static int MicStreamThreadEntry(int argc, const char** argv) {
     (void)argc;
     (void)argv;
 
+    struct sockaddr_in serverAddr = {};
+    serverAddr.sin_family = AF_INET;
+    serverAddr.sin_port = htons(SERVER_PORT);
+    inet_pton(AF_INET, SERVER_IP, &serverAddr.sin_addr);
+
+    if (sSock >= 0) {
+        const char pingMsg[] = {'W', 'I', 'I', 'U'};
+        sendto(sSock, pingMsg, sizeof(pingMsg), 0,
+               reinterpret_cast<struct sockaddr*>(&serverAddr), sizeof(serverAddr));
+    }
+
     // Cafe OS requires sampleMaxCount >= 0x2800 and a 0x40-aligned buffer of sampleMaxCount * 2 bytes
     const size_t maxSamples = 0x2800;
     const size_t ringBufferBytes = maxSamples * sizeof(int16_t);
@@ -51,11 +62,6 @@ static int MicStreamThreadEntry(int argc, const char** argv) {
     }
 
     if (MICOpen(handle) == MIC_ERROR_OK) {
-        struct sockaddr_in serverAddr = {};
-        serverAddr.sin_family = AF_INET;
-        serverAddr.sin_port = htons(SERVER_PORT);
-        inet_pton(AF_INET, SERVER_IP, &serverAddr.sin_addr);
-
         // Send up to 512 samples (1024 bytes) per UDP packet
         const size_t chunkSamples = 512;
         int16_t sendBuf[chunkSamples];
