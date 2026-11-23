@@ -2,10 +2,11 @@
 #include <mic/mic.h>
 #include <coreinit/thread.h>
 #include <coreinit/time.h>
-#include <nsysnet/socket.h>
+#include <coreinit/cache.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <unistd.h>
 #include <cstring>
 #include <malloc.h>
 
@@ -28,53 +29,73 @@ static int MicStreamThreadEntry(int argc, const char** argv) {
     (void)argc;
     (void)argv;
 
-    MICError err;
-    MICHandle handle = MICOpen(MIC_INSTANCE_0, &err);
-    if (handle < 0) {
+    // Cafe OS requires sampleMaxCount >= 0x2800 and a 0x40-aligned buffer of sampleMaxCount * 2 bytes
+    const size_t maxSamples = 0x2800;
+    const size_t ringBufferBytes = maxSamples * sizeof(int16_t);
+    int16_t* sampleBuffer = static_cast<int16_t*>(memalign(0x40, ringBufferBytes));
+    if (!sampleBuffer) {
+        return 0;
+    }
+    std::memset(sampleBuffer, 0, ringBufferBytes);
+    DCFlushRange(sampleBuffer, ringBufferBytes);
+
+    MICWorkMemory workMem = {};
+    workMem.sampleMaxCount = maxSamples;
+    workMem.sampleBuffer = sampleBuffer;
+
+    MICError err = MIC_ERROR_OK;
+    MICHandle handle = MICInit(MIC_INSTANCE_0, 0, &workMem, &err);
+    if (handle < 0 || err != MIC_ERROR_OK) {
+        free(sampleBuffer);
         return 0;
     }
 
-    // 32 kHz mono 16-bit PCM; 1024 samples = 2048 bytes (~32 ms chunks)
-    const uint32_t sampleCount = 1024;
-    const uint32_t bufferBytes = sampleCount * sizeof(int16_t);
-    int16_t* pcmBuffer = static_cast<int16_t*>(memalign(0x40, bufferBytes));
-    if (!pcmBuffer) {
-        MICClose(handle);
-        return 0;
-    }
-
-    MICInitData initData = {};
-    initData.workMemory = memalign(0x40, 0x10000);
-    initData.workMemorySize = 0x10000;
-    initData.sampleRate = MIC_SAMPLE_RATE_32000;
-    initData.bufferSize = bufferBytes;
-
-    if (MICInit(handle, &initData) == MIC_ERROR_NONE && MICStart(handle) == MIC_ERROR_NONE) {
+    if (MICOpen(handle) == MIC_ERROR_OK) {
         struct sockaddr_in serverAddr = {};
         serverAddr.sin_family = AF_INET;
         serverAddr.sin_port = htons(SERVER_PORT);
         inet_pton(AF_INET, SERVER_IP, &serverAddr.sin_addr);
 
+        // Send up to 512 samples (1024 bytes) per UDP packet
+        const size_t chunkSamples = 512;
+        int16_t sendBuf[chunkSamples];
+
         while (sRunning) {
             MICStatus status = {};
-            int32_t readSamples = MICRead(handle, pcmBuffer, sampleCount, &status);
-            if (readSamples > 0 && sSock >= 0) {
-                sendto(sSock, pcmBuffer, static_cast<size_t>(readSamples) * sizeof(int16_t),
-                       MSG_DONTWAIT, reinterpret_cast<struct sockaddr*>(&serverAddr), sizeof(serverAddr));
+            if (MICGetStatus(handle, &status) == MIC_ERROR_OK && status.availableData > 0) {
+                DCInvalidateRange(sampleBuffer, ringBufferBytes);
+
+                size_t remaining = static_cast<size_t>(status.availableData);
+                size_t pos = static_cast<size_t>(status.bufferPos);
+
+                while (remaining > 0 && sRunning) {
+                    size_t toSend = (remaining > chunkSamples) ? chunkSamples : remaining;
+
+                    for (size_t i = 0; i < toSend; ++i) {
+                        sendBuf[i] = sampleBuffer[(pos + i) % maxSamples];
+                    }
+
+                    if (sSock >= 0) {
+                        sendto(sSock, sendBuf, toSend * sizeof(int16_t), MSG_DONTWAIT,
+                               reinterpret_cast<struct sockaddr*>(&serverAddr), sizeof(serverAddr));
+                    }
+
+                    MICSetDataConsumed(handle, static_cast<int>(toSend));
+                    pos = (pos + toSend) % maxSamples;
+                    remaining -= toSend;
+                }
             }
             OSSleepTicks(OSMillisecondsToTicks(10));
         }
-        MICStop(handle);
+        MICClose(handle);
     }
 
-    MICClose(handle);
-    free(pcmBuffer);
-    free(initData.workMemory);
+    MICUninit(handle);
+    free(sampleBuffer);
     return 0;
 }
 
 INITIALIZE_PLUGIN() {
-    socket_lib_init();
     sSock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
 
     const size_t stackSize = 0x8000;
@@ -92,7 +113,7 @@ DEINITIALIZE_PLUGIN() {
         OSJoinThread(&sMicThread, nullptr);
     }
     if (sSock >= 0) {
-        socketclose(sSock);
+        close(sSock);
         sSock = -1;
     }
     free(sThreadStack);
