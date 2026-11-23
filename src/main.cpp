@@ -7,7 +7,6 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
-#include <cstdio>
 #include <cstring>
 #include <malloc.h>
 
@@ -25,13 +24,6 @@ static OSThread sMicThread;
 static uint8_t* sThreadStack = nullptr;
 static volatile bool sRunning = false;
 static int sSock = -1;
-
-static void SendDebugMsg(const struct sockaddr_in& addr, const char* msg) {
-    if (sSock >= 0) {
-        sendto(sSock, msg, std::strlen(msg), 0,
-               reinterpret_cast<const struct sockaddr*>(&addr), sizeof(addr));
-    }
-}
 
 static int MicStreamThreadEntry(int argc, const char** argv) {
     (void)argc;
@@ -53,7 +45,6 @@ static int MicStreamThreadEntry(int argc, const char** argv) {
     const size_t ringBufferBytes = maxSamples * sizeof(int16_t);
     int16_t* sampleBuffer = static_cast<int16_t*>(memalign(0x40, ringBufferBytes));
     if (!sampleBuffer) {
-        SendDebugMsg(serverAddr, "ERR_MEM");
         return 0;
     }
     std::memset(sampleBuffer, 0, ringBufferBytes);
@@ -66,66 +57,45 @@ static int MicStreamThreadEntry(int argc, const char** argv) {
     MICError err = MIC_ERROR_OK;
     MICHandle handle = MICInit(MIC_INSTANCE_0, 0, &workMem, &err);
     if (handle < 0 || err != MIC_ERROR_OK) {
-        char buf[64];
-        std::snprintf(buf, sizeof(buf), "ERR_INIT:%d:%d", static_cast<int>(handle), static_cast<int>(err));
-        SendDebugMsg(serverAddr, buf);
         free(sampleBuffer);
         return 0;
     }
 
-    // Configure sample rate, unmute, and set hardware mic gain before opening
-    MICSetState(handle, MIC_STATE_SAMPLE_RATE, MIC_SAMPLE_RATE_32K);
-    MICSetState(handle, MIC_STATE_MUTE, 0);
-    MICSetState(handle, MIC_STATE_GAIN, 0x1E);
+    if (MICOpen(handle) == MIC_ERROR_OK) {
+        // Send up to 512 samples (1024 bytes) per UDP packet
+        const size_t chunkSamples = 512;
+        int16_t sendBuf[chunkSamples];
 
-    MICError openErr = MICOpen(handle);
-    if (openErr != MIC_ERROR_OK) {
-        char buf[64];
-        std::snprintf(buf, sizeof(buf), "ERR_OPEN:%d", static_cast<int>(openErr));
-        SendDebugMsg(serverAddr, buf);
-        MICUninit(handle);
-        free(sampleBuffer);
-        return 0;
-    }
+        while (sRunning) {
+            MICStatus status = {};
+            if (MICGetStatus(handle, &status) == MIC_ERROR_OK && status.availableData > 0) {
+                DCInvalidateRange(sampleBuffer, ringBufferBytes);
 
-    // Re-apply unmute & gain after MICOpen in case Cafe OS resets defaults on open
-    MICSetState(handle, MIC_STATE_MUTE, 0);
-    MICSetState(handle, MIC_STATE_GAIN, 0x1E);
-    SendDebugMsg(serverAddr, "MIC_OPEN_OK");
+                size_t remaining = static_cast<size_t>(status.availableData);
+                size_t pos = static_cast<size_t>(status.bufferPos);
 
-    // Send up to 512 samples (1024 bytes) per UDP packet
-    const size_t chunkSamples = 512;
-    int16_t sendBuf[chunkSamples];
+                while (remaining > 0 && sRunning) {
+                    size_t toSend = (remaining > chunkSamples) ? chunkSamples : remaining;
 
-    while (sRunning) {
-        MICStatus status = {};
-        if (MICGetStatus(handle, &status) == MIC_ERROR_OK && status.availableData > 0) {
-            DCInvalidateRange(sampleBuffer, ringBufferBytes);
+                    for (size_t i = 0; i < toSend; ++i) {
+                        sendBuf[i] = sampleBuffer[(pos + i) % maxSamples];
+                    }
 
-            size_t remaining = static_cast<size_t>(status.availableData);
-            size_t pos = static_cast<size_t>(status.bufferPos);
+                    if (sSock >= 0) {
+                        sendto(sSock, sendBuf, toSend * sizeof(int16_t), MSG_DONTWAIT,
+                               reinterpret_cast<struct sockaddr*>(&serverAddr), sizeof(serverAddr));
+                    }
 
-            while (remaining > 0 && sRunning) {
-                size_t toSend = (remaining > chunkSamples) ? chunkSamples : remaining;
-
-                for (size_t i = 0; i < toSend; ++i) {
-                    sendBuf[i] = sampleBuffer[(pos + i) % maxSamples];
+                    MICSetDataConsumed(handle, static_cast<int>(toSend));
+                    pos = (pos + toSend) % maxSamples;
+                    remaining -= toSend;
                 }
-
-                if (sSock >= 0) {
-                    sendto(sSock, sendBuf, toSend * sizeof(int16_t), MSG_DONTWAIT,
-                           reinterpret_cast<struct sockaddr*>(&serverAddr), sizeof(serverAddr));
-                }
-
-                MICSetDataConsumed(handle, static_cast<int>(toSend));
-                pos = (pos + toSend) % maxSamples;
-                remaining -= toSend;
             }
+            OSSleepTicks(OSMillisecondsToTicks(10));
         }
-        OSSleepTicks(OSMillisecondsToTicks(10));
+        MICClose(handle);
     }
 
-    MICClose(handle);
     MICUninit(handle);
     free(sampleBuffer);
     return 0;
